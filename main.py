@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 def main():
     logger.info("Initializing Edge Sensor Pipeline...")
     
-    # 1. Initialize core components (Dependency Injection)
+    # Initialize core components (Dependency Injection)
     sensor = VibrationSensor()
     buffer = RingBuffer(max_len=WINDOW_SIZE)
     queue = DurableQueue()
@@ -37,11 +37,11 @@ def main():
     
     stop_event = threading.Event()
     
-    # 2. Initialize worker classes
+    # Initialize worker classes
     edge_worker = EdgeWorker(stop_event, sensor, buffer, queue, detector)
     sync_worker = SyncWorker(stop_event, queue, uploader)
     
-    # 3. Create threads pointing to the workers' primary methods
+    # Create threads pointing to the workers' primary methods
     edge_thread = threading.Thread(
         target=edge_worker.run,
         name="EdgeProcessorThread",
@@ -54,7 +54,7 @@ def main():
         daemon=True
     )
     
-    # 4. Start execution
+    # Start execution
     edge_thread.start()
     sync_thread.start()
     

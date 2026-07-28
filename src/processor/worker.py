@@ -2,12 +2,14 @@
 Edge Worker module.
 Orchestrates the high-priority loop: reading sensor data, managing the rolling window,
 extracting features, detecting anomalies, and dispatching payloads to the durable queue.
+Includes rate limiting (pacing) to match simulated real-time speed or run uncapped.
 """
 
+import time
 import threading
 from typing import Any
 
-from src.config import WINDOW_SIZE
+from src.config import WINDOW_SIZE, TARGET_SAMPLES_PER_SEC
 from src.utils.logger import get_logger
 from src.processor.features import extract_features
 
@@ -31,24 +33,30 @@ class EdgeWorker:
         sensor: VibrationSensor,
         buffer: RingBuffer,
         queue: DurableQueue,
-        detector: AnomalyDetector
+        detector: AnomalyDetector,
+        target_rate: float = TARGET_SAMPLES_PER_SEC
     ):
         self.stop_event = stop_event
         self.sensor = sensor
         self.buffer = buffer
         self.queue = queue
         self.detector = detector
+        self.target_rate = target_rate
 
     def run(self) -> None:
         """
         Main execution loop for the edge processor.
         Consumes the generator, updates the sliding window, and batches processing.
+        Applies pace control to throttle throughput if target_rate > 0.
         """
-        logger.info("Starting Edge Worker thread...")
+        logger.info(f"Starting Edge Worker thread (Target rate: {self.target_rate} Hz)...")
         samples_count = 0
 
         # Schedule a synthetic fault to test our detector (e.g., at 5s mark, lasting 2s)
         self.sensor.inject_fault(start_time=5.0, duration=2.0)
+
+        # High-precision timer for rate control
+        start_time = time.perf_counter()
 
         try:
             # stream_samples() yields: (timestamp, acceleration, ground_truth_anomaly)
@@ -62,6 +70,16 @@ class EdgeWorker:
                 # To maintain >1000Hz throughput efficiently, we process the window
                 if samples_count % WINDOW_SIZE == 0:
                     self._process_window()
+
+                # Rate Limiting / Pace Control
+                if self.target_rate > 0:
+                    # Expected total elapsed time in seconds for the samples processed so far
+                    expected_time = samples_count / self.target_rate
+                    elapsed_time = time.perf_counter() - start_time
+                    
+                    # If processing is running faster than target rate, sleep for the difference
+                    if elapsed_time < expected_time:
+                        time.sleep(expected_time - elapsed_time)
                     
         except Exception as e:
             logger.error(f"Edge Worker encountered a fatal error: {e}", exc_info=True)
@@ -71,28 +89,29 @@ class EdgeWorker:
     def _process_window(self) -> None:
         """
         Extracts features from the current window, runs anomaly detection, 
-        and queues the result for cloud sync.
+        updates detection confusion matrix metrics, and queues the result for cloud sync.
         """
         window_data = self.buffer.get_window()
         
-        # Extract statistical and frequency-domain features (RMS, FFT, etc.)
+        # Extract statistical and frequency-domain features
         features = extract_features(window_data)
         
         # Run anomaly detection logic
         is_anomaly = self.detector.evaluate(features)
         
-        # Extract the ground truth from the last sample in the window for scoring
-        # window_data format: list of tuples (timestamp, value, ground_truth)
+        # Extract ground truth from the last sample in the window
         last_timestamp, _, ground_truth = window_data[-1]
         
-        # Build the payload batch
+        # Update detector metrics so total_windows and precision/recall are tracked
+        self.detector.update_metrics(predicted_anomaly=is_anomaly, ground_truth_anomaly=ground_truth)
+        
+        # Build payload batch
         payload = {
             "timestamp": last_timestamp,
             "features": features,
             "anomaly_detected": is_anomaly,
             "ground_truth": ground_truth,
-            # (Optional) In a real scenario, we might include a downsampled array here
         }
         
-        # Push atomically to disk (JSON.gz) via DurableQueue
+        # Push atomically to disk
         self.queue.push(payload)

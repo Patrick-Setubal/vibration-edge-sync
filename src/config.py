@@ -30,6 +30,12 @@ BASE_ZETA: float = float(os.getenv("BASE_ZETA", 0.05))                    # Base
 # How many samples to keep in the rolling window (e.g., 1000 samples = 1 second)
 WINDOW_SIZE: int = int(os.getenv("WINDOW_SIZE", SAMPLE_RATE_HZ))
 
+# Rate Limiting / Pacing Configuration
+# Controls stream consumption rate in samples per second (Hz).
+# Example: 1000 = 1000 samples/sec (Simulated real-time)
+# Value -1 = Unlimited throughput (Runs at maximum CPU speed for benchmarks)
+TARGET_SAMPLES_PER_SEC: float = 1000.0
+
 # ==========================================
 # CLOUD SYNC & STORAGE CONFIGURATION
 # ==========================================

@@ -16,7 +16,7 @@ class AnomalyDetector:
     Tracks confusion matrix components (TP, FP, TN, FN) to compute accuracy metrics.
     """
 
-    def __init__(self, rms_threshold: float = 2.5, std_threshold: float = 2.0):
+    def __init__(self, rms_threshold: float = 2.0, std_threshold: float = 1.8):
         """
         Args:
             rms_threshold: Threshold above baseline for Root Mean Square vibration.
@@ -44,8 +44,7 @@ class AnomalyDetector:
         rms = features.get("rms", 0.0)
         std = features.get("std", 0.0)
 
-        # Simple yet robust decision logic for edge devices:
-        # High RMS combined with elevated variance indicates physical wear or loose mounting
+        # Flag anomaly if RMS or StdDev breaches the operational envelope
         is_anomaly = (rms > self.rms_threshold) or (std > self.std_threshold)
         
         return is_anomaly

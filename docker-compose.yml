@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  localstack:
+    container_name: edge-localstack
+    image: localstack/localstack:3.4.0
+    ports:
+      - "4566:4566"
+    environment:
+      - DEBUG=1
+      - AWS_DEFAULT_REGION=us-east-1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  edge-pipeline:
+    container_name: edge-pipeline
+    image: python:3.10-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - python_pip_cache:/root/.cache/pip  # Reutiliza os pacotes baixados do pip
+      - python_site_packages:/usr/local/lib/python3.10/site-packages  # Mantém os pacotes instalados
+    environment:
+      - S3_ENDPOINT_URL=http://localstack:4566
+      - PYTHONPATH=/app
+    # Instala o requirements.txt de forma incremental apenas se houver mudanças
+    command: >
+      bash -c "pip install --no-cache-dir -r requirements.txt && tail -f /dev/null"
+    depends_on:
+      - localstack
+
+volumes:
+  python_pip_cache:
+  python_site_packages:

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
 
 from src.config import S3_ENDPOINT_URL, S3_BUCKET_NAME, DEVICE_ID
 from src.utils.logger import get_logger
@@ -51,7 +51,6 @@ class S3Uploader:
             aws_secret_access_key="test"
         )
         
-        # Best-effort bucket creation on init (won't crash if LocalStack is still starting up)
         self._ensure_bucket_exists()
 
     def _ensure_bucket_exists(self) -> bool:
@@ -63,6 +62,9 @@ class S3Uploader:
             self.s3_client.create_bucket(Bucket=self.bucket_name)
             logger.info(f"S3 Bucket '{self.bucket_name}' verified/created.")
             return True
+        except EndpointConnectionError:
+            logger.warning(f"Unable to connect to S3 endpoint ({S3_ENDPOINT_URL}). Will retry during sync.")
+            return False
         except (BotoCoreError, ClientError) as e:
             logger.warning(f"Could not verify/create S3 bucket '{self.bucket_name}': {e}")
             return False
@@ -79,7 +81,6 @@ class S3Uploader:
         Returns:
             bool: True if upload succeeded, False if a network or server error occurred.
         """
-        # Determine partitioning path based on the batch timestamp
         timestamp = payload.get("timestamp", datetime.now(timezone.utc).timestamp())
         dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
         
@@ -91,7 +92,7 @@ class S3Uploader:
             f"{batch_id}"
         )
 
-        # Re-compress payload in memory for streaming upload
+        # Compress JSON payload in memory
         json_data = json.dumps(payload).encode("utf-8")
         compressed_buffer = io.BytesIO()
         with gzip.GzipFile(fileobj=compressed_buffer, mode="wb") as gz:
@@ -99,24 +100,32 @@ class S3Uploader:
         
         compressed_bytes = compressed_buffer.getvalue()
 
-        # Attempt PutObject (with retry logic for missing buckets)
         try:
             return self._put_object_to_s3(s3_key, compressed_bytes)
+        except EndpointConnectionError:
+            logger.warning(f"S3 endpoint unreachable for batch {batch_id}. Holding batch in queue.")
+            return False
+            
+        # Handle missing bucket scenario
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             
-            # If the bucket doesn't exist, try creating it on the fly and re-uploading
             if error_code in ("NoSuchBucket", "404"):
                 logger.warning(f"Bucket '{self.bucket_name}' missing during upload. Attempting self-healing...")
                 if self._ensure_bucket_exists():
                     try:
                         return self._put_object_to_s3(s3_key, compressed_bytes)
+                    except EndpointConnectionError:
+                        logger.warning(f"S3 endpoint lost during retry for batch {batch_id}.")
+                        return False
                     except (BotoCoreError, ClientError) as retry_err:
                         logger.error(f"Re-upload failed after bucket creation: {retry_err}")
                         return False
             
             logger.error(f"S3 ClientError uploading {batch_id}: {e}")
             return False
+            
+        # Catch unexpected errors
         except (BotoCoreError, Exception) as e:
             logger.error(f"Unexpected error uploading {batch_id}: {e}", exc_info=True)
             return False
